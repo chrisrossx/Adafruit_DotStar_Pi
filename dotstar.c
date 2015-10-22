@@ -82,10 +82,10 @@ static uint8_t isPi2 = 0; // For clock pulse timing & stuff
 // SPI transfer operation setup.  These are only used w/hardware SPI
 // and LEDs at full brightness (or raw write); other conditions require
 // per-byte processing.  Explained further in the show() method.
+static uint8_t header[] = { 0x00, 0x00, 0x00, 0x00 };
 static struct spi_ioc_transfer xfer[3] = {
- { .tx_buf        = 0, // Header (zeros)
-   .rx_buf        = 0,
-   .len           = 4,
+ { .rx_buf        = 0,
+   .len           = sizeof(header),
    .delay_usecs   = 0,
    .bits_per_word = 8,
    .cs_change     = 0 },
@@ -93,8 +93,7 @@ static struct spi_ioc_transfer xfer[3] = {
    .delay_usecs   = 0,
    .bits_per_word = 8,
    .cs_change     = 0 },
- { .tx_buf        = 0, // Footer (zeros)
-   .rx_buf        = 0,
+ { .rx_buf        = 0,
    .delay_usecs   = 0,
    .bits_per_word = 8,
    .cs_change     = 0 }
@@ -249,6 +248,9 @@ static PyObject *begin(DotStarObject *self) {
 		// that will not exceed the requested rate.
 		// e.g. 8 MHz request: 250 MHz / 32 = 7.8125 MHz.
 		ioctl(self->fd, SPI_IOC_WR_MAX_SPEED_HZ, self->bitrate);
+		xfer[0].tx_buf = (unsigned long)header;
+		xfer[0].speed_hz = xfer[1].speed_hz = xfer[2].speed_hz =
+		  self->bitrate;
 	} else { // Use bitbang "soft" SPI (any 2 pins)
 		if(gpio == NULL) { // First time accessing GPIO?
 			int fd;
@@ -373,14 +375,16 @@ static void clockPulse(uint32_t mask) {
 
 // Private method.  Writes pixel data without brightness scaling.
 static void raw_write(DotStarObject *self, uint8_t *ptr, uint32_t len) {
+	uint32_t footerLen;
 	if(self->fd >= 0) { // Hardware SPI
-		xfer[0].speed_hz = self->bitrate;
-		xfer[1].speed_hz = self->bitrate;
-		xfer[2].speed_hz = self->bitrate;
 		xfer[1].tx_buf   = (unsigned long)ptr;
 		xfer[1].len      = len;
-		if(self->numLEDs) xfer[2].len = (self->numLEDs + 15) / 16;
-		else              xfer[2].len = ((len / 4) + 15) / 16;
+		if(self->numLEDs) footerLen = (self->numLEDs + 15) / 16;
+		else              footerLen = ((len / 4) + 15) / 16;
+		uint8_t footer[footerLen];
+		memset(footer, 0, footerLen*sizeof(uint8_t));
+		xfer[2].tx_buf = (unsigned long)footer;
+		xfer[2].len = footerLen;
 		// All that spi_ioc_transfer struct stuff earlier in
 		// the code is so we can use this single ioctl to concat
 		// the data & footer into one operation:
@@ -388,7 +392,6 @@ static void raw_write(DotStarObject *self, uint8_t *ptr, uint32_t len) {
 	} else if(self->dataMask) { // Bitbang
 		unsigned char byte, bit,
 		              headerLen = 32;
-		uint32_t      footerLen;
 		if(self->numLEDs) footerLen = (self->numLEDs + 1) / 2;
 		else              footerLen = ((len / 4) + 1) / 2;
 		*gpioClr = self->dataMask;
